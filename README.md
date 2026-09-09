@@ -63,6 +63,34 @@ uvicorn api:app --reload
 python agent.py
 ```
 
+## 换成其他模型（不限于智谱）
+
+默认使用智谱的 `glm-4-flash`，但**代码没有绑定任何厂商**。只要目标服务的接口兼容 OpenAI 的 `/chat/completions` 格式（目前绝大多数大模型服务都兼容），改 `config.py` 两行就能切换：
+
+```python
+# config.py
+URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"  # ← 改这里：服务商地址
+MODEL = "glm-4-flash"                                           # ← 改这里：模型名
+```
+
+例如：
+
+| 服务商 | URL | MODEL |
+|---|---|---|
+| 智谱（默认） | `https://open.bigmodel.cn/api/paas/v4/chat/completions` | `glm-4-flash` |
+| OpenAI | `https://api.openai.com/v1/chat/completions` | `gpt-4o-mini` |
+| DeepSeek | `https://api.deepseek.com/chat/completions` | `deepseek-chat` |
+| 阿里通义 | `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions` | `qwen-plus` |
+| 本地 Ollama | `http://localhost:11434/v1/chat/completions` | `qwen2.5` |
+
+同时把环境变量名和读取的 key 一起改掉即可：
+
+```python
+MY_KEY = os.environ["你的环境变量名"]
+```
+
+**为什么能这样**：`llm.py` 里发请求的格式（`messages`、`tools`、`tool_calls`）就是 OpenAI 定的通用协议，各家基本都照抄。所以换服务商 = 换地址和名字，业务代码一行不用动。
+
 ## 技术点
 
 - **手写 tool calling 循环**：`模型返回 tool_calls → 查表执行本地函数 → 结果写回 messages → 再请求模型`，完整闭环没有依赖框架
