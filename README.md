@@ -75,6 +75,15 @@ curl -X POST http://127.0.0.1:8000/chat \
 # {"reply":"你好喵！"}
 ```
 
+**HTTP 接口与终端 agent 具备相同的工具调用能力**：
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message":"武汉天气"}'
+# {"reply":"好的喵，武汉今天晴，气温约为30°喵。"}
+```
+
 ## 工作原理：工具调用循环
 
 ```

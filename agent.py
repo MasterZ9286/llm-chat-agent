@@ -53,6 +53,7 @@ def ask_with_tools(user_text,messages):
         if msg is None:
             return "(请求出错，请看上方错误信息)"
         if not msg.get("tool_calls"): return msg["content"]
+        messages.append(msg)
         #找工具用
         for tc in msg["tool_calls"]:
             name = tc["function"]["name"]

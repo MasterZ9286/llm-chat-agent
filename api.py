@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from llm import ask
+from agent import ask_with_tools
 
 app = FastAPI()
 
@@ -15,7 +15,7 @@ def health():
 
 @app.post("/chat")
 def chat_api(body: ChatIn):
-    answer = ask(body.message, messages)
+    answer = ask_with_tools(body.message, messages)
     return{"reply":answer}
 
     
