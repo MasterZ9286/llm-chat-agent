@@ -1,7 +1,9 @@
 import sqlite3
 
+DB_PATH = "chat.db"
+
 def init_db():
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS messages(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14,14 +16,14 @@ def init_db():
     conn.close()
 
 def save_message(session_id, role, content):
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",(session_id, role, content))
     conn.commit()
     conn.close()
 
 def load_messages(session_id):
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT role, content FROM messages WHERE session_id = ?", (session_id,))
     rows = cur.fetchall()
@@ -33,7 +35,7 @@ def load_messages(session_id):
     return result
 
 def clear_messages(session_id):
-    conn = sqlite3.connect("chat.db")
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("DELETE FROM messages WHERE session_id = ?", (session_id, ))
     conn.commit()
