@@ -24,8 +24,13 @@ def main():
             save_message(SESSION_ID, "system", DEFAULT_PERSONA)
             print("记忆已清空。")
         elif text.startswith("/persona"):
-            new_persona = text[len("/persona"):]
+            new_persona = text[len("/persona"):].strip()
+            if new_persona.strip() == "": 
+                print("未输入有效内容，用法/persona后面接人设内容")
+                continue
             messages = [{"role": "system", "content": new_persona}]
+            clear_messages(SESSION_ID)
+            save_message(SESSION_ID, "system", new_persona)
             print("人格已切换。")
 
         else:
