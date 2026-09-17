@@ -2,14 +2,17 @@
 
 一个**不依赖任何 Agent 框架**（无需 LangChain / LangGraph）的大模型应用示例项目。
 
-代码量小、结构清晰、依赖极少，适合用来理解 LLM 应用的三条主线：**多轮对话、HTTP 服务化、工具调用（Agent 循环）**。
+代码量小、结构清晰、依赖极少，适合用来理解 LLM 应用的几条主线：**多轮对话、HTTP 服务化、工具调用（Agent 循环）、会话持久化**。
 
 ## 特性
 
 - **三个入口，共用一套核心**：终端聊天、HTTP 接口、工具调用 Agent
 - **手写 tool calling 循环**：模型决定调用哪个本地函数 → 本地执行 → 结果回传 → 生成回答，全流程透明，无黑盒
 - **多工具 + 多轮工具调用**：一次请求可触发多个工具，带轮次上限保护
-- **分层设计**：配置 / 模型通信 / 交互逻辑彼此独立
+- **对话持久化（SQLite）**：对话历史落到本地数据库，进程重启后记忆还在
+- **按 `session_id` 隔离会话**：不同会话各存各的历史，互不串台
+- **分层设计**：配置 / 模型通信 / 数据存储 / 交互逻辑彼此独立
+- **有单元测试**：数据层用 pytest 覆盖，测试使用临时数据库，不污染真实数据
 - **错误可读**：请求失败返回中文提示而非抛出 Traceback
 - **密钥不落源码**：API Key 仅从环境变量读取
 - **兼容任意 OpenAI 格式的模型服务**：改两行配置即可切换厂商
@@ -20,6 +23,9 @@
 
 ```bash
 pip install requests fastapi uvicorn
+
+# 跑测试才需要（可选）
+pip install pytest
 ```
 
 ### 2. 配置 API Key（环境变量）
@@ -38,15 +44,22 @@ setx ZHIPU_API_KEY "your-api-key"
 ### 3. 运行
 
 ```bash
-# ① 终端聊天
+# ① 终端聊天（带持久化记忆，支持 /clear、/persona）
 python chat.py
 
 # ② HTTP 服务（浏览器打开 http://127.0.0.1:8000/docs 可交互试用）
 uvicorn api:app --reload
 
-# ③ 工具调用 Agent
+# ③ 工具调用 Agent（纯终端，历史不落库）
 python agent.py
+
+# ④ 跑测试
+pytest -v
 ```
+
+> 注意：三个入口必须用**同一个 Python 解释器**运行。如果某个环境里报
+> `ModuleNotFoundError: No module named 'requests'`，说明你换了解释器，
+> 而不是代码有问题。
 
 ## 使用示例
 
@@ -62,6 +75,14 @@ AI：现在是2026年9月10日22点37分24秒喵。
 你：北京和武汉的天气
 AI：北京今天晴，30°，武汉也是晴，30°喵。      ← 一次调用两个工具
 ```
+
+终端内置命令：
+
+| 命令 | 作用 |
+|---|---|
+| `/exit` | 退出 |
+| `/clear` | 清空当前会话的历史，人设恢复默认 |
+| `/persona <内容>` | 更换人设（**同时清空历史**，并写入数据库） |
 
 **HTTP 接口**
 
@@ -83,6 +104,30 @@ curl -X POST http://127.0.0.1:8000/chat \
      -d '{"message":"武汉天气"}'
 # {"reply":"好的喵，武汉今天晴，气温约为30°喵。"}
 ```
+
+**多会话隔离**：请求体里带 `session_id`，服务端按它读写各自的历史。
+
+```bash
+# 会话 A 自报家门
+curl -X POST http://127.0.0.1:8000/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message":"我叫周宽，记住","session_id":"A"}'
+
+# 会话 A 问名字 —— 答得出
+curl -X POST http://127.0.0.1:8000/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message":"我叫什么","session_id":"A"}'
+# {"reply":"您叫周宽喵。"}
+
+# 会话 B 问同样的问题 —— 答不出（两边历史互不可见）
+curl -X POST http://127.0.0.1:8000/chat \
+     -H "Content-Type: application/json" \
+     -d '{"message":"我叫什么","session_id":"B"}'
+# {"reply":"喵，你的名字是猫娘喵。"}
+```
+
+`session_id` 由**客户端生成并保管**（浏览器里一般是打开页面时生成一个随机串），不传则默认为 `"default"`。
+不用 IP 自动生成——同一出口 IP 下的多个用户会串成一堆；也不要用用户名——本项目没有登录体系。
 
 ## 工作原理：工具调用循环
 
@@ -107,23 +152,82 @@ curl -X POST http://127.0.0.1:8000/chat \
 
 关键点：**模型只负责"决定调用哪个函数"，真正的执行发生在本进程内。** 执行结果必须写回对话历史，模型才知道发生了什么。
 
+## 对话持久化
+
+历史存在项目根目录的 `chat.db`（SQLite，Python 标准库自带，无需安装），已被 `.gitignore` 忽略。
+
+表结构：
+
+```sql
+CREATE TABLE IF NOT EXISTS messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,                                   -- 会话标识
+    role       TEXT NOT NULL,                                   -- system / user / assistant
+    content    TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+数据层接口（`db.py`）：
+
+| 函数 | 作用 |
+|---|---|
+| `init_db()` | 建表（表已存在则跳过） |
+| `save_message(session_id, role, content)` | 追加一条消息 |
+| `load_messages(session_id)` | 取该会话的全部历史，返回 `[{"role": ..., "content": ...}, ...]` |
+| `clear_messages(session_id)` | 删除该会话的全部记录 |
+
+几个设计取舍：
+
+- **`DB_PATH` 是模块级常量**，不是写死在函数里。测试可以把它指向临时文件，从而完全不碰真实数据库。
+- **`load_messages()` 返回字典列表**，而不是数据库原生的元组列表，这样可以直接作为 `messages` 喂给模型，又能 `append` 继续对话。
+- **人设（system 消息）也存在同一张表里**，所以 `/clear`、`/persona` 都要同时改内存和数据库；否则会出现"内存里有人设、库里没有"，重启后人设丢失。
+- **只存用户输入和最终回答**。工具调用的中间消息（assistant 的 `tool_calls`、`role="tool"` 的结果）不落库——重启后的历史里没有它们，不影响后续对话，但模型也看不到"上次查过什么"。
+
+## 测试
+
+```bash
+pytest -v
+```
+
+覆盖 `db.py` 的三个关键行为：存取往返、两个会话互不干扰、清空后为空。
+
+隔离方式：每个测试通过 pytest 的 `tmp_path` fixture 拿到一个独立的临时目录，把 `db.DB_PATH` 指向里面的临时数据库——所以**跑测试不会动你的 `chat.db`**。
+
+```python
+def test_clear(tmp_path):
+    db.DB_PATH = str(tmp_path / "t.db")
+    db.init_db()
+    db.save_message("A", "user", "你好")
+    db.clear_messages("A")
+    assert db.load_messages("A") == []
+```
+
 ## 项目结构
 
 ```
 .
-├── config.py    # 配置层：API 地址、模型名、读取环境变量、请求头
-├── llm.py       # 模型层：call_model() 发送请求；ask() 单轮对话
-├── chat.py      # 入口：终端交互，多轮记忆、人设切换
-├── api.py       # 入口：FastAPI 服务，GET /health、POST /chat
-├── agent.py     # 入口：工具清单 + 工具调用循环
+├── config.py           # 配置层：API 地址、模型名、读取环境变量、请求头
+├── llm.py              # 模型层：call_model() 发送请求；ask() 单轮对话
+├── db.py               # 数据层：SQLite 建表 / 存 / 取 / 清空
+├── chat.py             # 入口：终端交互，持久化记忆、人设切换
+├── api.py              # 入口：FastAPI 服务，GET /health、POST /chat
+├── agent.py            # 入口：工具清单 + 工具调用循环
+├── test_db_pytest.py   # 测试：数据层单元测试
 └── README.md
 ```
 
 **依赖方向是单向的**，上层只需知道下层的接口：
 
 ```
-chat.py / api.py / agent.py  →  llm.py  →  config.py
+chat.py / api.py  →  db.py
+        │
+        └────────►  llm.py  →  config.py
+
+agent.py  →  llm.py  →  config.py
 ```
+
+（`test_db_pytest.py` 只依赖 `db.py`。）
 
 ## 配置其他模型
 
@@ -171,16 +275,20 @@ TOOL_FUNCS = {"get_weather": get_weather}
 
 ## 当前限制
 
-- 对话历史保存在**进程内存**中，重启即丢失
-- HTTP 服务的所有请求**共用同一份对话历史**，多用户会相互干扰
-- 未实现鉴权、限流、并发处理
+- **无鉴权**：`session_id` 完全由客户端提供，服务端不校验，谁都能读到别人的会话
+- **无并发控制**：`db.py` 每个函数各自 `connect` / `close`，高并发写入时可能遇到 SQLite 的写锁
+- **工具调用的中间消息不落库**：重启后模型看不到上次的工具调用过程
+- **`created_at` 存的是 UTC**（SQLite 的 `CURRENT_TIMESTAMP` 特性），比东八区早 8 小时
 - 工具调用轮次上限固定为 5
+- 未实现限流、日志、异常上报
 
 ## Roadmap
 
-- [ ] 用 SQLite 持久化对话，按 `session_id` 隔离会话
+- [x] 用 SQLite 持久化对话，按 `session_id` 隔离会话
+- [x] 补充单元测试（数据层）
+- [ ] 补 HTTP 接口测试（pytest + `TestClient`，不起服务器）
 - [ ] 接入 RAG（检索增强生成）
-- [ ] 补充单元测试
+- [ ] 容器化并部署一次
 
 ## License
 
